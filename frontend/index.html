@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>FHR + UC</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <h2>Фетальный монитор (ЧСС + Маточные сокращения)</h2>
+  <canvas id="combinedChart"></canvas>
+
+  <h3>Метрики</h3>
+  <table border="1" cellpadding="5">
+    <tr><th>Метрика</th><th>Значение</th></tr>
+    <tr><td>Тренд (bpm/мин)</td><td id="m_trend">-</td></tr>
+    <tr><td>SDNN</td><td id="m_sdnn">-</td></tr>
+    <tr><td>RMSSD</td><td id="m_rmssd">-</td></tr>
+    <tr><td>pNN5</td><td id="m_pnn5">-</td></tr>
+    <tr><td>Baseline (медиана)</td><td id="m_baseline">-</td></tr>
+    <tr><td>Диапазон (мин–макс)</td><td id="m_range">-</td></tr>
+    <tr><td>Доля пропусков</td><td id="m_missing">-</td></tr>
+  </table>
+
+  <h3>Аномалии</h3>
+  <div id="alerts"></div>
+
+  <script>
+    const MAX_WINDOW_SEC = 600; // 10 минут
+    let timeLabels = [];
+    let fhrData = [];
+    let ucData = [];
+
+    const combinedChart = new Chart(document.getElementById('combinedChart'), {
+    type: 'line',
+    data: {
+        labels: timeLabels,
+        datasets: [
+        {
+            label: 'ЧСС (FHR)',
+            data: fhrData,
+            borderColor: 'blue',
+            yAxisID: 'yFHR',
+                spanGaps: true  // соединяет пропуски
+        },
+        {
+            label: 'Маточные сокращения (UC)',
+            data: ucData,
+            borderColor: 'green',
+            yAxisID: 'yUC',
+            spanGaps: true
+        }
+        ]
+    },
+    options: {
+        animation: false,
+        scales: {
+        x: { title: { text: "Время, сек", display: true } },
+        yFHR: { type: 'linear', position: 'left', title: { text: "ЧСС, bpm", display: true }, min: 80, max: 200 },
+        yUC:  { type: 'linear', position: 'right', title: { text: "UC", display: true }, min: 0, max: 100,
+                grid: { drawOnChartArea: false } }
+        }
+    }
+    });
+
+
+    const ws = new WebSocket("ws://localhost:8000/ws/stream");
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+
+      // добавляем новые точки ЧСС
+      msg.fhr_points.forEach(([t, v]) => {
+        timeLabels.push(t.toFixed(0));        // целые секунды
+        fhrData.push(v !== null ? v : null);  // null → пропуск
+        ucData.push(null);
+        });
+
+
+      // добавляем новые точки UC
+      msg.uc_points.forEach(([t, v]) => {
+        const idx = timeLabels.findIndex(lbl => lbl === t.toFixed(1));
+        if (idx >= 0) {
+          ucData[idx] = v;
+        } else {
+          timeLabels.push(t.toFixed(1));
+          fhrData.push(null);
+          ucData.push(v);
+        }
+      });
+
+      // ограничиваем окно
+      if (timeLabels.length > MAX_WINDOW_SEC) {
+        timeLabels.splice(0, timeLabels.length - MAX_WINDOW_SEC);
+        fhrData.splice(0, fhrData.length - MAX_WINDOW_SEC);
+        ucData.splice(0, ucData.length - MAX_WINDOW_SEC);
+      }
+
+      combinedChart.update();
+
+      // обновляем метрики
+      if (msg.metrics) {
+        document.getElementById("m_trend").innerText    = msg.metrics.slope_bpm_min.toFixed(2);
+        document.getElementById("m_sdnn").innerText     = msg.metrics.sdnn.toFixed(2);
+        document.getElementById("m_rmssd").innerText    = msg.metrics.rmssd.toFixed(2);
+        document.getElementById("m_pnn5").innerText     = msg.metrics.pnn5.toFixed(1) + "%";
+        document.getElementById("m_baseline").innerText = msg.metrics.baseline_med.toFixed(1);
+        document.getElementById("m_range").innerText    = `[${msg.metrics.vmin.toFixed(1)}, ${msg.metrics.vmax.toFixed(1)}]`;
+        document.getElementById("m_missing").innerText  = (msg.metrics.missing_ratio*100).toFixed(1) + "%";
+      }
+
+      // алерты
+      if (msg.alerts && msg.alerts.length > 0) {
+        const div = document.getElementById("alerts");
+        div.innerHTML = "";
+        msg.alerts.forEach(a => {
+          const p = document.createElement("p");
+          p.innerText = a;
+          p.style.color = "red";
+          div.appendChild(p);
+        });
+      }
+    };
+  </script>
+</body>
+</html>
